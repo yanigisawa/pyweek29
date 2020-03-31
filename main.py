@@ -55,9 +55,6 @@ class Player(pg.sprite.Sprite):
         self.room_rect = SCREENRECT
 
     def move_left_right(self, direction):
-        self.rect.move_ip(direction * self.speed, 0)
-        # print(self.rect)
-        self.rect = self.rect.clamp(self.room_rect)
         if self.foot == 0:
             self.foot_index *= -1
             self.foot = 10
@@ -65,16 +62,21 @@ class Player(pg.sprite.Sprite):
                 self.take_step()
 
         if direction < 0:
+            if not self.can_move_left():
+                return
             self.image = self.left_images[self.foot_index]
             self.foot -= 1
         elif direction > 0:
+            if not self.can_move_right():
+                return
             self.image = self.right_images[self.foot_index]
             self.foot -= 1
 
-    def move_up_down(self, direction):
-        self.rect.move_ip(0, direction * self.speed)
+        self.rect.move_ip(direction * self.speed, 0)
         self.rect = self.rect.clamp(self.room_rect)
+        self.door_collision()
 
+    def move_up_down(self, direction):
         if self.foot == 0:
             self.foot_index *= -1
             self.foot = 10
@@ -82,23 +84,77 @@ class Player(pg.sprite.Sprite):
                 self.take_step()
 
         if direction < 0:
+            if not self.can_move_up():
+                return
             self.image = self.up_images[self.foot_index]
             self.foot -= 1
         elif direction > 0:
+            if not self.can_move_down():
+                return
             self.image = self.down_images[self.foot_index]
             self.foot -= 1
+
+        self.rect.move_ip(0, direction * self.speed)
+        self.rect = self.rect.clamp(self.room_rect)
+        self.door_collision()
 
 
 class GameState:
     player = None
     noise_level = 0
     last_step_taken = datetime.now()
+    furniture = {}
+    doors = {}
 
     def __init__(self):
         self.preload_images()
         self.player = Player()
+        self.player.can_move_left = self.can_move_left
+        self.player.can_move_right = self.can_move_right
+        self.player.can_move_up = self.can_move_up
+        self.player.can_move_down = self.can_move_down
+        self.player.door_collision = self.door_collision
         self.player.take_step = self.step_taken
-        self.font = pg.font.SysFont(None, 20)
+        self.font = pg.font.SysFont(None, 30)
+        self.avoid_rects = []
+
+    def door_collision(self):
+        rect_tuples = [d for _, d in self.doors.items()]
+        collide_index = self.player.rect.collidelist([r[0] for r in rect_tuples])
+        if collide_index != -1:
+            rect_tuples[collide_index][1]()
+
+    def can_move_left(self):
+        p_rect = pg.Rect(self.player.rect)
+        p_rect.left -= self.player.speed
+        rects = [s.rect for _, s in self.furniture.items()]
+        if p_rect.collidelist(rects) != -1:
+            return False
+        return True
+
+    def can_move_right(self):
+        p_rect = pg.Rect(self.player.rect)
+        p_rect.left += self.player.speed
+        rects = [s.rect for _, s in self.furniture.items()]
+        if p_rect.collidelist(rects) != -1:
+            return False
+        return True
+
+    def can_move_up(self):
+        p_rect = pg.Rect(self.player.rect)
+        p_rect.top -= self.player.speed
+        rects = [s.rect for _, s in self.furniture.items()]
+        if p_rect.collidelist(rects) != -1:
+            return False
+        return True
+
+    def can_move_down(self):
+        p_rect = pg.Rect(self.player.rect)
+        p_rect.top += self.player.speed
+        rects = [s.rect for _, s in self.furniture.items()]
+        if p_rect.collidelist(rects) != -1:
+            return False
+        return True
 
     def step_taken(self):
         self.last_step_taken = datetime.now()
@@ -133,6 +189,11 @@ class GameState:
             "top_left": (int(width / 6), int(height / 6),),
         }
         bed = Furniture("bed.png", room_top_left=self.bedroom["top_left"])
+        desk = Furniture("desk.png", room_top_left=self.bedroom["top_left"])
+        desk.rect.left = self.bedroom["top_left"][0] + 100
+        desk.rect.top = self.bedroom["top_left"][1] + 10
+        self.furniture["bed"] = bed
+        self.furniture["desk"] = desk
 
     def reduce_noise_level(self):
         now = datetime.now()
@@ -157,17 +218,29 @@ class GameState:
         pg.draw.rect(score_box, pg.Color(255, 0, 0), (0, 0, 100, 20), 2)
         screen.blit(score_box, (t_rect.width + 20, 10))
 
+    def move_to_hallway(self):
+
+        print("render hallway")
+
     def render_bedroom(self, screen, floor):
         carpet_tile = self.bedroom_images["carpet_tile"]
         width, height = self.bedroom["width"], self.bedroom["height"]
         top_left = self.bedroom["top_left"]
 
         room_surface = pg.Surface((width, height))
-        for x in range(0, width, carpet_tile.get_width()):
-            for y in range(0, height, carpet_tile.get_height()):
+        for x in range(SCREENRECT.left, width, carpet_tile.get_width()):
+            for y in range(SCREENRECT.top, height, carpet_tile.get_height()):
                 room_surface.blit(carpet_tile, (x, y))
 
+        room_rect = room_surface.get_rect()
+        # room_rect.top, room_rect.left = top_left[0], top_left[1]
+        door = pg.Rect(0, 0, 45, 10)
+        door.midbottom = room_rect.midbottom
+        pg.draw.rect(room_surface, pg.Color(101, 67, 33), door)
+        # door.fill((101, 67, 33))
+        # room_surface.blit(door, door)
         room_rect = screen.blit(room_surface, top_left)
+        self.doors["bottom"] = (door, self.move_to_hallway)
         return room_surface, room_rect
 
 
@@ -185,10 +258,12 @@ def handle_keyboard(state):
 
 
 class Furniture(pg.sprite.Sprite):
-    def __init__(self, image_name, room_top_left=None):
+    def __init__(self, image_name, room_top_left=None, scale=None):
         pg.sprite.Sprite.__init__(self, self.containers)
         img = load_image(image_name, scene=True)
-        self.image = pg.transform.scale(img, (40, 40))
+        self.image = img
+        if scale is not None:
+            self.image = pg.transform.scale(img, scale)
 
         if room_top_left is None:
             room_top_left = (0, 0)
@@ -212,7 +287,9 @@ def main():
 
     clock = pg.time.Clock()
     pg.display.update()
+
     game_state = GameState()
+    game_state.render(screen, background)
     screen.fill(BACKGROUND_COLOR)
     # room_surface = render_bedroom(screen, background)
     # player.room_rect = room_surface.get_rect()
